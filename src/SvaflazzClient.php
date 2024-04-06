@@ -24,9 +24,9 @@ class SvaflazzClient
         return $this;
     }
 
-    public function setBody(array $body)
+    public function setBody($body)
     {
-        $this->body = array_merge($this->body, $body);
+        $this->body = $body;
         return $this;
     }
 
@@ -44,6 +44,7 @@ class SvaflazzClient
     {
         try {
             $response = $this->client->post($this->url(), $this->options());
+            return $response;
         } catch (RequestException $ex) {
             $response = $ex->getResponse();
             $body = json_decode($response->getBody());
