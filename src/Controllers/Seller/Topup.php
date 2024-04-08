@@ -2,6 +2,7 @@
 
 namespace Svakode\Svaflazz\Controllers\Seller;
 
+use App\Models\GameVoucher;
 use App\Models\Order;
 use App\Models\PaymentMethod;
 use App\Models\Service;
@@ -41,8 +42,12 @@ class Topup extends Base
         //         'message' => 'Invalid signature',
         //     ]);
         // }
-        if($request->ip() === "52.74.250.133")
-        {
+
+        // if($request->ip() === "52.74.250.133")
+        // {
+        
+            Log::info('Digiflazz Payload (temporary) => {id}', ['id' => json_encode($request->all())]);
+
             if($command == "topup")
             {
                 /**
@@ -102,28 +107,90 @@ class Topup extends Base
                     if($existOrder->status == "waiting" || $existOrder->status == "pending" || $existOrder->status == "processing"  )
                     {
                         $statusDigiflazz = "0";
+                        $statusName = "PROCESS";
                         $rc = "39";
 
                     }else if($existOrder->status == "success" )
                     {
                         $statusDigiflazz = "1";
+                        $statusName = "SUCCESS";
                         $rc = "00";
-
+                        $body = [
+                            "data" => [
+                                'ref_id'     => $request->ref_id,
+                                'status'     => $statusDigiflazz,
+                                "code"      => $request->pulsa_code,
+                                "hp"        => $request->hp,
+                                "price"     => (string)$existOrder->price,
+                                "message"   => $statusName,
+                                "balance"   => (string)$user->balance,
+                                "tr_id"     => $existOrder->invoice,
+                                "rc"        => $rc,
+                                "sn"        => $existOrder->invoice
+                            ]
+                        ];
+                        
+                        Log::info('Digiflazz Callback Payload (temporary) => {id}', ['id' => json_encode($body)]);
+                         
+                          
+                        $responseCallback = $this->client->setUrl('/seller/callback')
+                         ->setBody($body);
+    
+                        Log::info('Digiflazz Callback URL (temporary) => {id}', ['id' => config('svaflazz.base_url') . '/seller/callback']);
+                         
+    
+                        $responseCallback = $responseCallback->run();
+    
+                        Log::info('Digiflazz Callback Response (temporary) => {id}', ['id' => $responseCallback->getBody()->getContents()]);
+    
 
                     }else if($existOrder->status == "canceled" || $existOrder->status == "error" )
                     {
                         $statusDigiflazz = "2";
+                        $statusName = "FAILED";
                         $rc = "07";
+
+                        $body = [
+                            "data" => [
+                                'ref_id'     => $request->ref_id,
+                                'status'     => $statusDigiflazz,
+                                "code"      => $request->pulsa_code,
+                                "hp"        => $request->hp,
+                                "price"     => (string)$existOrder->price,
+                                "message"   => $statusName,
+                                "balance"   => (string)$user->balance,
+                                "tr_id"     => $existOrder->invoice,
+                                "rc"        => $rc,
+                                "sn"        => $existOrder->invoice
+                            ]
+                        ];
+                        
+                        Log::info('Digiflazz Callback Payload (temporary) => {id}', ['id' => json_encode($body)]);
+                         
+                          
+                        $responseCallback = $this->client->setUrl('/seller/callback')
+                         ->setBody($body);
+    
+                        Log::info('Digiflazz Callback URL (temporary) => {id}', ['id' => config('svaflazz.base_url') . '/seller/callback']);
+                         
+    
+                        $responseCallback = $responseCallback->run();
+    
+                        Log::info('Digiflazz Callback Response (temporary) => {id}', ['id' => $responseCallback->getBody()->getContents()]);
+    
                     }
+
+
+
                     return response()->json([
                         "data" => [
                             'ref_id'     => $request->ref_id,
                             'status'     => $statusDigiflazz,
                             "code"      => $request->pulsa_code,
                             "hp"        => $request->hp,
-                            "price"     => $finalPrice,
-                            "message"   => "Success",
-                            "balance"   => $user->balance,
+                            "price"     => (string)$existOrder->price,
+                            "message"   => $statusName,
+                            "balance"   => (string)$user->balance,
                             "tr_id"     => $existOrder->invoice,
                             "rc"        => $rc,
                             "sn"        => $existOrder->invoice
@@ -192,18 +259,217 @@ class Topup extends Base
                     $order->paid_amount = intval($finalPrice);
                     $order->save();
 
+                    if($order->service->provider === "otomatis")
+                    {
+                        /**
+                         * Add game voucher to this order
+                         */
+                        $availableVoucher = GameVoucher::where('service_id', $order->service_id)
+                        ->where('status', '=', 'new')
+                        ->orderBy('created_at', 'ASC')
+                        ->take($order->qty)
+                        ->get();
+                        
+                        
+                        if(count($availableVoucher) > 0 && count($availableVoucher) >= $order->qty)
+                        {
+                            foreach($availableVoucher as $voucher)
+                            {
+                                $voucher->update(['order_id' => $order->id, 'status' => 'used']);
+                            }
+                            $order->update(['status' => 'success']);
+                            
+                            $web = \App\Models\WebSetting::where('id', 1)->first();
+                            $pesan = "Halo kak, \n\n".
+                            "Pesanan anda dengan nomor invoice #".$order->invoice." telah kami proses, silakan lakukan pengecekan terhadap target/data pesanan yang telah anda masukkan. \n".
+                            "*- Kategori* : ".$order->service->category->name."\n".
+                            "*- Produk* : ".$order->service->name."\n".
+                            "*- Target* : ".$order->data."\n".
+                            "*- SN/Kode Voucher* : ".(count($order->vouchers()->get()) > 0 ? implode(',', $order->vouchers()->get()->pluck('serial_number', 'code')->toArray()) : '')."\n\n".
+                            "Terima kasih telah berbelanja di ".ENV("APP_NAME")."\n\n".
+                            "_Jika terdapat kendala/anda rasa notifikasi ini salah, silakan hubungi Admin_\n".
+                            "Whatsapp : https://wa.me/".$web->admin_number;
+
+                            // $phone = str_replace("08", "628", $request->phone);
+                            $phone = preg_replace("/^08/mi", "628", $request->hp);
+
+                            $wa = new WASender();
+                            $wa->number = $phone;
+                            $wa->message = $pesan;
+                            $wa->status = 'waiting';
+                            $wa->save();
+
+
+                            $statusDigiflazz = "1";
+                            $statusName = "SUCCESS";
+                            $rc = "00";
+
+                            $body = [
+                                "data" => [
+                                    'ref_id'     => $request->ref_id,
+                                    'status'     => $statusDigiflazz,
+                                    "code"      => $request->pulsa_code,
+                                    "hp"        => $request->hp,
+                                    "price"     => (string)$finalPrice,
+                                    "message"   => $statusName,
+                                    "balance"   => (string)$user->balance,
+                                    "tr_id"     => $invoice,
+                                    "rc"        => $rc,
+                                    "sn"        => $invoice
+                                ]
+                            ];
+
+                            
+                            Log::info('Digiflazz Callback Payload (temporary) => {id}', ['id' => json_encode($body)]);
+                            
+                            
+                            $responseCallback = $this->client->setUrl('/seller/callback')
+                            ->setBody($body);
+
+                            Log::info('Digiflazz Callback URL (temporary) => {id}', ['id' => config('svaflazz.base_url') . '/seller/callback']);
+                            
+
+                            $responseCallback = $responseCallback->run();
+
+                            Log::info('Digiflazz Callback Response (temporary) => {id}', ['id' => $responseCallback->getBody()->getContents()]);
+                            
+
+                            return response()->json([
+                                "data" => [
+                                    'ref_id'     => $request->ref_id,
+                                    'status'     => $statusDigiflazz,
+                                    "code"      => $request->pulsa_code,
+                                    "hp"        => $request->hp,
+                                    "price"     => (string)$finalPrice,
+                                    "message"   => $statusName,
+                                    "balance"   => (string)$user->balance,
+                                    "tr_id"     => $invoice,
+                                    "rc"        => $rc,
+                                    "sn"        => $invoice
+                                ]
+                            ]);
+
+                        }else{
+                            $order->update(['status' => 'canceled']);
+
+                            $statusDigiflazz = "2";
+                            $statusName = "PRODUCT IS TEMPORARILY OUT OF SERVICE";
+                            $rc = "106";
+
+                            $body = [
+                                "data" => [
+                                    'ref_id'     => $request->ref_id,
+                                    'status'     => $statusDigiflazz,
+                                    "code"      => $request->pulsa_code,
+                                    "hp"        => $request->hp,
+                                    "price"     => (string)$finalPrice,
+                                    "message"   => $statusName,
+                                    "balance"   => (string)$user->balance,
+                                    "tr_id"     => $invoice,
+                                    "rc"        => $rc,
+                                    "sn"        => $invoice
+                                ]
+                            ];
+
+                            Log::info('Digiflazz Callback Payload (temporary) => {id}', ['id' => json_encode($body)]);
+                            
+                            
+                            $responseCallback = $this->client->setUrl('/seller/callback')
+                            ->setBody($body);
+
+                            Log::info('Digiflazz Callback URL (temporary) => {id}', ['id' => config('svaflazz.base_url') . '/seller/callback']);
+                                
+
+                            $responseCallback = $responseCallback->run();
+
+                            Log::info('Digiflazz Callback Response (temporary) => {id}', ['id' => $responseCallback->getBody()->getContents()]);
+
+
+                        }
+                    }else{
+                        $statusDigiflazz = "0";
+                        $statusName = "PROCESS";
+                        $rc = "39";
+
+                        return response()->json([
+                            "data" => [
+                                'ref_id'     => $request->ref_id,
+                                'status'     => $statusDigiflazz,
+                                "code"      => $request->pulsa_code,
+                                "hp"        => $request->hp,
+                                "price"     => (string)$finalPrice,
+                                "message"   => $statusName,
+                                "balance"   => (string)$user->balance,
+                                "tr_id"     => $invoice,
+                                "rc"        => $rc,
+                                "sn"        => $invoice
+                            ]
+                        ]);
+
+                    }
+
+
+                    if($order->status == "waiting" || $order->status == "pending" || $order->status == "processing"  )
+                    {
+                        $statusDigiflazz = "0";
+                        $statusName = "PROCESS";
+                        $rc = "39";
+
+                    }else if($order->status == "success" )
+                    {
+                        $statusDigiflazz = "1";
+                        $statusName = "SUCCESS";
+                        $rc = "00";
+
+
+                    }else if($order->status == "canceled" || $order->status == "error" )
+                    {
+                        $statusDigiflazz = "2";
+                        $statusName = "FAILED";
+                        $rc = "07";
+                    }
+
+
+                    // $body = [
+                    //     "data" => [
+                    //         'ref_id'     => $request->ref_id,
+                    //         'status'     => $statusDigiflazz,
+                    //         "code"      => $request->pulsa_code,
+                    //         "hp"        => $request->hp,
+                    //         "price"     => (string)$finalPrice,
+                    //         "message"   => $statusName,
+                    //         "balance"   => (string)$user->balance,
+                    //         "tr_id"     => $invoice,
+                    //         "rc"        => $rc,
+                    //         "sn"        => $invoice
+                    //     ]
+                    // ];
+
+                    // Log::info('Digiflazz Callback Payload (temporary) => {id}', ['id' => json_encode($body)]);
+                     
+                      
+                    // $responseCallback = $this->client->setUrl('/seller/callback')
+                    //  ->setBody($body);
+
+                    // Log::info('Digiflazz Callback URL (temporary) => {id}', ['id' => config('svaflazz.base_url') . '/seller/callback']);
+                     
+
+                    // $responseCallback = $responseCallback->run();
+
+                    // Log::info('Digiflazz Callback Response (temporary) => {id}', ['id' => $responseCallback->getBody()->getContents()]);
+                    
 
                     return response()->json([
                         "data" => [
                             'ref_id'     => $request->ref_id,
-                            'status'     => "0",
+                            'status'     => $statusDigiflazz,
                             "code"      => $request->pulsa_code,
                             "hp"        => $request->hp,
-                            "price"     => $finalPrice,
-                            "message"   => "Success",
-                            "balance"   => $user->balance,
+                            "price"     => (string)$finalPrice,
+                            "message"   => $statusName,
+                            "balance"   => (string)$user->balance,
                             "tr_id"     => $invoice,
-                            "rc"        => "39",
+                            "rc"        => $rc,
                             "sn"        => $invoice
                         ]
                     ]);
@@ -227,28 +493,93 @@ class Topup extends Base
                      if($existOrder->status == "waiting" || $existOrder->status == "pending" || $existOrder->status == "processing"  )
                      {
                          $statusDigiflazz = "0";
+                         $statusName = "PROCESS";
                          $rc = "39";
  
                      }else if($existOrder->status == "success" )
                      {
                          $statusDigiflazz = "1";
+                         $statusName = "SUCCESS";
                          $rc = "00";
  
- 
+                         $body = [
+                            "data" => [
+                                'ref_id'     => $request->ref_id,
+                                'status'     => $statusDigiflazz,
+                                "code"      => $request->pulsa_code,
+                                "hp"        => $request->hp,
+                                "price"     => (string)$existOrder->price,
+                                "message"   => $statusName,
+                                "balance"   => (string)$user->balance,
+                                "tr_id"     => $existOrder->invoice,
+                                "rc"        => $rc,
+                                "sn"        => $existOrder->invoice
+                            ]
+                        ];
+   
+                       Log::info('Digiflazz Callback Payload (temporary) => {id}', ['id' => json_encode($body)]);
+                        
+                         
+                       $responseCallback = $this->client->setUrl('/seller/callback')
+                        ->setBody($body);
+   
+                       Log::info('Digiflazz Callback URL (temporary) => {id}', ['id' => config('svaflazz.base_url') . '/seller/callback']);
+                        
+   
+                       $responseCallback = $responseCallback->run();
+   
+                       Log::info('Digiflazz Callback Response (temporary) => {id}', ['id' => $responseCallback->getBody()->getContents()]);
+                       
                      }else if($existOrder->status == "canceled" || $existOrder->status == "error" )
                      {
                          $statusDigiflazz = "2";
+                         $statusName = "FAILED";
                          $rc = "07";
+
+
+                         $body = [
+                            "data" => [
+                                'ref_id'     => $request->ref_id,
+                                'status'     => $statusDigiflazz,
+                                "code"      => $request->pulsa_code,
+                                "hp"        => $request->hp,
+                                "price"     => (string)$existOrder->price,
+                                "message"   => $statusName,
+                                "balance"   => (string)$user->balance,
+                                "tr_id"     => $existOrder->invoice,
+                                "rc"        => $rc,
+                                "sn"        => $existOrder->invoice
+                            ]
+                        ];
+   
+                       Log::info('Digiflazz Callback Payload (temporary) => {id}', ['id' => json_encode($body)]);
+                        
+                         
+                       $responseCallback = $this->client->setUrl('/seller/callback')
+                        ->setBody($body);
+   
+                       Log::info('Digiflazz Callback URL (temporary) => {id}', ['id' => config('svaflazz.base_url') . '/seller/callback']);
+                        
+   
+                       $responseCallback = $responseCallback->run();
+   
+                       Log::info('Digiflazz Callback Response (temporary) => {id}', ['id' => $responseCallback->getBody()->getContents()]);
+                       
+
                      }
+ 
+ 
+
+
                      return response()->json([
                          "data" => [
                              'ref_id'     => $request->ref_id,
                              'status'     => $statusDigiflazz,
                              "code"      => $request->pulsa_code,
                              "hp"        => $request->hp,
-                             "price"     => $existOrder->price,
-                             "message"   => "Success",
-                             "balance"   => $user->balance,
+                             "price"     => (string)$existOrder->price,
+                             "message"   => $statusName,
+                             "balance"   => (string)$user->balance,
                              "tr_id"     => $existOrder->invoice,
                              "rc"        => $rc,
                              "sn"        => $existOrder->invoice
@@ -256,14 +587,14 @@ class Topup extends Base
                      ]);
                 }
             }
-        }else{
-            return response()->json([
-                "data" => [
-                    'message' => 'Akses tidak diizinkan'
-                ]
-            ]);
+        // }else{
+        //     return response()->json([
+        //         "data" => [
+        //             'message' => 'Akses tidak diizinkan'
+        //         ]
+        //     ]);
 
-        }
+        // }
     }
 
     public function priceControl($id, $role)
